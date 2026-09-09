@@ -2,6 +2,7 @@
   "name": "sharefast-monorepo",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@10.28.0",
   "description": "Fast Offline Peer-to-Peer File Sharing Web Application",
   "scripts": {
     "dev": "pnpm --parallel --filter @sharefast/* run dev",
