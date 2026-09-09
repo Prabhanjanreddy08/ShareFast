@@ -1,0 +1,268 @@
+/**
+ * @sharefast/crypto
+ * Cryptographic helpers, token/OTP generation, and binary chunk framing.
+ */
+
+import { PROTOCOL_CONSTANTS } from '@sharefast/protocol';
+
+/**
+ * Generate a cryptographically secure random hex string token.
+ */
+export function generateSecureToken(byteLength = 16): string {
+  const bytes = new Uint8Array(byteLength);
+  if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    // Fallback for older environments
+    for (let i = 0; i < byteLength; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Generate a cryptographically random 6-digit numeric OTP.
+ */
+export function generateOtp(length = PROTOCOL_CONSTANTS.OTP_LENGTH): string {
+  const digits = new Uint8Array(length);
+  if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.getRandomValues) {
+    globalThis.crypto.getRandomValues(digits);
+  } else {
+    for (let i = 0; i < length; i++) {
+      digits[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  // Map bytes to digits 0-9 cleanly
+  return Array.from(digits)
+    .map((d) => (d % 10).toString())
+    .join('');
+}
+
+/**
+ * Compute a 32-bit FNV-1a hash of a string for binary header identification.
+ */
+export function stringHash32(str: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+/**
+ * Binary Packet Framing:
+ * Header (13 bytes):
+ * - [0]: Message Type (0x01 = CHUNK_DATA)
+ * - [1..4]: Transfer ID hash (uint32 big-endian)
+ * - [5..8]: Chunk Index (uint32 big-endian)
+ * - [9..12]: Chunk Size (uint32 big-endian)
+ * Followed by raw chunk payload.
+ */
+export function packBinaryChunk(
+  transferIdHash: number,
+  chunkIndex: number,
+  chunkPayload: Uint8Array
+): Uint8Array {
+  const headerSize = PROTOCOL_CONSTANTS.BINARY_HEADER_SIZE;
+  const packet = new Uint8Array(headerSize + chunkPayload.byteLength);
+  const view = new DataView(packet.buffer);
+
+  // [0] Type
+  view.setUint8(0, PROTOCOL_CONSTANTS.CHUNK_TYPE_DATA);
+  // [1..4] Transfer ID Hash
+  view.setUint32(1, transferIdHash, false);
+  // [5..8] Chunk Index
+  view.setUint32(5, chunkIndex, false);
+  // [9..12] Chunk Size
+  view.setUint32(9, chunkPayload.byteLength, false);
+
+  // Payload
+  packet.set(chunkPayload, headerSize);
+  return packet;
+}
+
+export function unpackBinaryChunk(buffer: ArrayBuffer): {
+  type: number;
+  transferIdHash: number;
+  chunkIndex: number;
+  chunkSize: number;
+  payload: Uint8Array;
+} {
+  const view = new DataView(buffer);
+  const type = view.getUint8(0);
+  const transferIdHash = view.getUint32(1, false);
+  const chunkIndex = view.getUint32(5, false);
+  const chunkSize = view.getUint32(9, false);
+
+  const payload = new Uint8Array(buffer, PROTOCOL_CONSTANTS.BINARY_HEADER_SIZE, chunkSize);
+
+  return {
+    type,
+    transferIdHash,
+    chunkIndex,
+    chunkSize,
+    payload
+  };
+}
+
+/**
+ * Lightweight, streaming incremental SHA-256 implementation.
+ * Allows calculating SHA-256 chunk-by-chunk without loading multi-GB files in RAM.
+ */
+export class IncrementalSha256 {
+  private h0 = 0x6a09e667;
+  private h1 = 0xbb67ae85;
+  private h2 = 0x3c6ef372;
+  private h3 = 0xa54ff53a;
+  private h4 = 0x510e527f;
+  private h5 = 0x9b05688c;
+  private h6 = 0x1f83d9ab;
+  private h7 = 0x5be0cd19;
+
+  private buffer = new Uint8Array(64);
+  private bufferLength = 0;
+  private totalBytes = 0;
+  private w = new Int32Array(64);
+
+  private static K = new Int32Array([
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ]);
+
+  public update(chunk: Uint8Array): this {
+    let offset = 0;
+    let length = chunk.length;
+    this.totalBytes += length;
+
+    if (this.bufferLength > 0) {
+      const needed = 64 - this.bufferLength;
+      if (length >= needed) {
+        this.buffer.set(chunk.subarray(0, needed), this.bufferLength);
+        this.processBlock(this.buffer, 0);
+        offset += needed;
+        length -= needed;
+        this.bufferLength = 0;
+      } else {
+        this.buffer.set(chunk, this.bufferLength);
+        this.bufferLength += length;
+        return this;
+      }
+    }
+
+    while (length >= 64) {
+      this.processBlock(chunk, offset);
+      offset += 64;
+      length -= 64;
+    }
+
+    if (length > 0) {
+      this.buffer.set(chunk.subarray(offset, offset + length), 0);
+      this.bufferLength = length;
+    }
+
+    return this;
+  }
+
+  private processBlock(data: Uint8Array, offset: number) {
+    const w = this.w;
+    const K = IncrementalSha256.K;
+
+    for (let i = 0; i < 16; i++) {
+      const idx = offset + (i << 2);
+      w[i] = (data[idx] << 24) | (data[idx + 1] << 16) | (data[idx + 2] << 8) | data[idx + 3];
+    }
+
+    for (let i = 16; i < 64; i++) {
+      const s0 = (((w[i - 15] >>> 7) | (w[i - 15] << 25)) ^
+                 ((w[i - 15] >>> 18) | (w[i - 15] << 14)) ^
+                 (w[i - 15] >>> 3));
+      const s1 = (((w[i - 2] >>> 17) | (w[i - 2] << 15)) ^
+                 ((w[i - 2] >>> 19) | (w[i - 2] << 13)) ^
+                 (w[i - 2] >>> 10));
+      w[i] = (((w[i - 16] + s0) | 0) + ((w[i - 7] + s1) | 0)) | 0;
+    }
+
+    let a = this.h0;
+    let b = this.h1;
+    let c = this.h2;
+    let d = this.h3;
+    let e = this.h4;
+    let f = this.h5;
+    let g = this.h6;
+    let h = this.h7;
+
+    for (let i = 0; i < 64; i++) {
+      const S1 = (((e >>> 6) | (e << 26)) ^
+                  ((e >>> 11) | (e << 21)) ^
+                  ((e >>> 25) | (e << 7)));
+      const ch = (e & f) ^ ((~e) & g);
+      const temp1 = ((((((h + S1) | 0) + ch) | 0) + K[i]) | 0) + w[i] | 0;
+      const S0 = (((a >>> 2) | (a << 30)) ^
+                  ((a >>> 13) | (a << 19)) ^
+                  ((a >>> 22) | (a << 10)));
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) | 0;
+
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) | 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) | 0;
+    }
+
+    this.h0 = (this.h0 + a) | 0;
+    this.h1 = (this.h1 + b) | 0;
+    this.h2 = (this.h2 + c) | 0;
+    this.h3 = (this.h3 + d) | 0;
+    this.h4 = (this.h4 + e) | 0;
+    this.h5 = (this.h5 + f) | 0;
+    this.h6 = (this.h6 + g) | 0;
+    this.h7 = (this.h7 + h) | 0;
+  }
+
+  public digest(): string {
+    const totalBits = this.totalBytes * 8;
+    this.buffer[this.bufferLength++] = 0x80;
+
+    if (this.bufferLength > 56) {
+      for (let i = this.bufferLength; i < 64; i++) this.buffer[i] = 0;
+      this.processBlock(this.buffer, 0);
+      this.bufferLength = 0;
+    }
+
+    for (let i = this.bufferLength; i < 56; i++) this.buffer[i] = 0;
+
+    // Append 64-bit length (big-endian)
+    const high = Math.floor(totalBits / 0x100000000);
+    const low = totalBits >>> 0;
+    this.buffer[56] = (high >>> 24) & 0xff;
+    this.buffer[57] = (high >>> 16) & 0xff;
+    this.buffer[58] = (high >>> 8) & 0xff;
+    this.buffer[59] = high & 0xff;
+    this.buffer[60] = (low >>> 24) & 0xff;
+    this.buffer[61] = (low >>> 16) & 0xff;
+    this.buffer[62] = (low >>> 8) & 0xff;
+    this.buffer[63] = low & 0xff;
+
+    this.processBlock(this.buffer, 0);
+
+    const hex = [this.h0, this.h1, this.h2, this.h3, this.h4, this.h5, this.h6, this.h7]
+      .map((val) => (val >>> 0).toString(16).padStart(8, '0'))
+      .join('');
+
+    return hex;
+  }
+}

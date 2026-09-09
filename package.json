@@ -1,0 +1,26 @@
+{
+  "name": "sharefast-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fast Offline Peer-to-Peer File Sharing Web Application",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @sharefast/* run dev",
+    "dev:signaling": "pnpm --filter @sharefast/signaling run dev",
+    "dev:web": "pnpm --filter @sharefast/web run dev",
+    "build": "pnpm --recursive run build",
+    "test": "node tests/unit-test.mjs && node tests/e2e-signaling-test.mjs",
+    "start": "pnpm --parallel --filter @sharefast/* run start",
+    "start:signaling": "pnpm --filter @sharefast/signaling run start",
+    "start:web": "pnpm --filter @sharefast/web run start"
+  },
+  "keywords": [
+    "p2p",
+    "webrtc",
+    "file-sharing",
+    "airdrop",
+    "offline",
+    "lan"
+  ],
+  "author": "",
+  "license": "MIT"
+}

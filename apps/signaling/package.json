@@ -1,0 +1,22 @@
+{
+  "name": "@sharefast/signaling",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./src/server.ts",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@sharefast/crypto": "workspace:*",
+    "@sharefast/protocol": "workspace:*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/ws": "^8.5.14",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0"
+  }
+}
